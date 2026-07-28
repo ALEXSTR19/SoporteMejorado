@@ -46,9 +46,10 @@ function prepararInventario($conexion)
         "CREATE TABLE IF NOT EXISTS inventario_movimientos (
             id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
             articulo_id INT UNSIGNED NOT NULL,
-            tipo ENUM('Alta','Ajuste','Salida','Devolucion','Cancelacion') NOT NULL,
+            tipo ENUM('Alta','Edicion','Ajuste','Salida','Devolucion','Cancelacion','Baja') NOT NULL,
             cantidad DECIMAL(10,2) NOT NULL,
             referencia VARCHAR(40) NOT NULL DEFAULT '',
+            detalle TEXT NOT NULL,
             usuario VARCHAR(100) NOT NULL,
             creado_en TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
             INDEX idx_mov_articulo (articulo_id), INDEX idx_mov_fecha (creado_en),
@@ -78,6 +79,20 @@ function prepararInventario($conexion)
             if (!mysqli_query($conexion, "ALTER TABLE inventario_articulos ADD COLUMN `$nombre` $definicion")) {
                 return 'No fue posible actualizar el modulo de inventario: ' . mysqli_error($conexion);
             }
+        }
+    }
+
+    $detalle = mysqli_query($conexion, "SHOW COLUMNS FROM inventario_movimientos LIKE 'detalle'");
+    if (!$detalle || mysqli_num_rows($detalle) === 0) {
+        if (!mysqli_query($conexion, "ALTER TABLE inventario_movimientos ADD COLUMN detalle TEXT NOT NULL AFTER referencia")) {
+            return 'No fue posible agregar el detalle al kardex: ' . mysqli_error($conexion);
+        }
+    }
+    $tipoMovimiento = mysqli_query($conexion, "SHOW COLUMNS FROM inventario_movimientos LIKE 'tipo'");
+    $columnaTipo = $tipoMovimiento ? mysqli_fetch_assoc($tipoMovimiento) : null;
+    if (!$columnaTipo || strpos($columnaTipo['Type'], "'Edicion'") === false || strpos($columnaTipo['Type'], "'Baja'") === false) {
+        if (!mysqli_query($conexion, "ALTER TABLE inventario_movimientos MODIFY tipo ENUM('Alta','Edicion','Ajuste','Salida','Devolucion','Cancelacion','Baja') NOT NULL")) {
+            return 'No fue posible habilitar todos los tipos de movimiento del kardex: ' . mysqli_error($conexion);
         }
     }
     return '';
