@@ -46,3 +46,63 @@
 .navbar .form-control {
   padding: .75rem 1rem;
 }
+
+/*
+ * Mobile layout
+ *
+ * Keep the document itself as the vertical scroll container.  Some mobile
+ * browsers can otherwise leave the page locked after Bootstrap's offcanvas
+ * navigation closes, especially when the content is taller than the visual
+ * viewport.
+ */
+html {
+  min-height: 100%;
+  overflow-x: hidden;
+}
+
+body {
+  min-height: 100%;
+}
+
+@media (max-width: 767.98px) {
+  html,
+  body {
+    height: auto;
+    min-height: 100%;
+    overscroll-behavior-y: auto;
+  }
+
+  body:not(.modal-open) {
+    overflow-y: auto !important;
+    -webkit-overflow-scrolling: touch;
+    touch-action: pan-y;
+  }
+
+  main {
+    min-width: 0;
+    padding-right: 1rem;
+    padding-left: 1rem;
+  }
+
+  .container-fluid > .row {
+    min-height: 0;
+  }
+
+  .sidebar .offcanvas-body {
+    -webkit-overflow-scrolling: touch;
+    overscroll-behavior: contain;
+    touch-action: pan-y;
+  }
+
+  .navbar-brand {
+    width: auto;
+    max-width: calc(100vw - 4rem);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .table-responsive {
+    -webkit-overflow-scrolling: touch;
+  }
+}
