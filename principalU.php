@@ -236,6 +236,12 @@ require_once("conexion.php");
                 Reporte Seguim.
               </a>
             </li>
+			<li class="nav-item">
+			  <a class="nav-link d-flex align-items-center gap-2" href="inventario.php">
+				<svg class="bi"><use xlink:href="#cart"/></svg>
+				Control e inventario
+			  </a>
+			</li>
             </ul>
           <hr class="my-3">
           <ul class="nav flex-column mb-auto">
