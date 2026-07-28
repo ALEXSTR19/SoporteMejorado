@@ -19,6 +19,20 @@ function ejecutar($db, $sql, $tipos, $valores) {
     mysqli_stmt_close($stmt);
     return $ok;
 }
+function registrarMovimiento($db, $articuloId, $tipo, $cantidad, $referencia, $detalle, $usuario) {
+    return ejecutar($db, 'INSERT INTO inventario_movimientos (articulo_id,tipo,cantidad,referencia,detalle,usuario) VALUES (?,?,?,?,?,?)', 'isdsss', array($articuloId,$tipo,$cantidad,$referencia,$detalle,$usuario));
+}
+function detalleEdicionArticulo($anterior, $nuevo, $cambioFoto) {
+    $etiquetas = array('nombre'=>'Nombre','modelo'=>'Modelo','categoria'=>'Categoria','unidad'=>'Unidad','existencia'=>'Existencia','minimo'=>'Stock minimo','ubicacion'=>'Ubicacion','descripcion'=>'Descripcion','estado'=>'Estado','observaciones'=>'Observaciones','usuario_anterior'=>'Usuario anterior','usuario_actual'=>'Usuario actual','reutilizable'=>'Retornable');
+    $cambios = array();
+    foreach ($etiquetas as $campo => $etiqueta) {
+        $antes = (string)($anterior[$campo] ?? ''); $despues = (string)($nuevo[$campo] ?? '');
+        if (in_array($campo, array('existencia','minimo'), true)) { $antes = number_format((float)$antes, 2, '.', ''); $despues = number_format((float)$despues, 2, '.', ''); }
+        if ($antes !== $despues) $cambios[] = $etiqueta . ': "' . ($antes === '' ? 'vacio' : $antes) . '" -> "' . ($despues === '' ? 'vacio' : $despues) . '"';
+    }
+    if ($cambioFoto) $cambios[] = 'Foto: reemplazada';
+    return $cambios ? implode('; ', $cambios) : 'Edicion guardada sin cambios en los datos';
+}
 function segmentoCodigo($valor, $limite, $soloNumeros = false) {
     $valor = iconv('UTF-8', 'ASCII//TRANSLIT//IGNORE', (string)$valor);
     $patron = $soloNumeros ? '/[^0-9]/' : '/[^A-Z0-9]/';
@@ -87,15 +101,16 @@ if (!$error && $_SERVER['REQUEST_METHOD'] === 'POST') {
                 $codigo = generarCodigoInventario($conecta, $nombre, $modelo);
                 $foto = guardarFotoInventario($_FILES['foto'] ?? array(), $error);
             }
+            if (!$error) mysqli_begin_transaction($conecta);
             if (!$error && ejecutar($conecta, 'INSERT INTO inventario_articulos (codigo,nombre,modelo,foto,categoria,unidad,existencia,minimo,ubicacion,descripcion,estado,observaciones,usuario_anterior,usuario_actual,reutilizable,creado_por) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)', 'ssssssddssssssis', array($codigo,$nombre,$modelo,$foto,$categoria,$unidad,$existencia,$minimo,$ubicacion,$descripcion,$estado,$observaciones,$usuarioAnterior,$usuarioActual,$reutilizable,$usuario))) {
                 $id = mysqli_insert_id($conecta);
-                ejecutar($conecta, "INSERT INTO inventario_movimientos (articulo_id,tipo,cantidad,referencia,usuario) VALUES (?,'Alta',?,'INICIAL',?)", 'ids', array($id,$existencia,$usuario));
-                $mensaje = "Articulo $codigo registrado correctamente.";
-            } elseif (!$error) { if ($foto && is_file(__DIR__ . '/' . $foto)) unlink(__DIR__ . '/' . $foto); $error = 'No se pudo registrar el articulo.'; }
+                if (registrarMovimiento($conecta,$id,'Alta',$existencia,'INICIAL','Alta inicial del articulo',$usuario)) { mysqli_commit($conecta); $mensaje = "Articulo $codigo registrado correctamente."; }
+                else { mysqli_rollback($conecta); if ($foto && is_file(__DIR__ . '/' . $foto)) unlink(__DIR__ . '/' . $foto); $error = 'No se pudo registrar el alta en el kardex.'; }
+            } elseif (!$error) { mysqli_rollback($conecta); if ($foto && is_file(__DIR__ . '/' . $foto)) unlink(__DIR__ . '/' . $foto); $error = 'No se pudo registrar el articulo.'; }
         } elseif ($accion === 'editar_articulo') {
             $id = (int)($_POST['articulo_id'] ?? 0); $d = datosArticuloFormulario();
             mysqli_begin_transaction($conecta);
-            $res = $id ? mysqli_query($conecta, "SELECT foto,existencia FROM inventario_articulos WHERE id=$id AND activo=1 FOR UPDATE") : false;
+            $res = $id ? mysqli_query($conecta, "SELECT * FROM inventario_articulos WHERE id=$id AND activo=1 FOR UPDATE") : false;
             $anterior = $res ? mysqli_fetch_assoc($res) : null;
             if (!$anterior || !datosArticuloValidos($d)) $error = 'Los datos del articulo no son validos.';
             $fotoNueva = '';
@@ -104,7 +119,9 @@ if (!$error && $_SERVER['REQUEST_METHOD'] === 'POST') {
                 $foto = $fotoNueva ?: $anterior['foto'];
                 $ok = ejecutar($conecta, 'UPDATE inventario_articulos SET nombre=?,modelo=?,foto=?,categoria=?,unidad=?,existencia=?,minimo=?,ubicacion=?,descripcion=?,estado=?,observaciones=?,usuario_anterior=?,usuario_actual=?,reutilizable=? WHERE id=? AND activo=1', 'sssssddssssssii', array($d['nombre'],$d['modelo'],$foto,$d['categoria'],$d['unidad'],$d['existencia'],$d['minimo'],$d['ubicacion'],$d['descripcion'],$d['estado'],$d['observaciones'],$d['usuario_anterior'],$d['usuario_actual'],$d['reutilizable'],$id));
                 $diferencia = $d['existencia'] - (float)$anterior['existencia'];
-                if ($ok && abs($diferencia) > 0.00001) $ok = ejecutar($conecta, "INSERT INTO inventario_movimientos (articulo_id,tipo,cantidad,referencia,usuario) VALUES (?,'Ajuste',?,'EDICION DE ARTICULO',?)", 'ids', array($id,$diferencia,$usuario));
+                $detalle = detalleEdicionArticulo($anterior, $d, $fotoNueva !== '');
+                $tipo = abs($diferencia) > 0.00001 ? 'Ajuste' : 'Edicion';
+                if ($ok) $ok = registrarMovimiento($conecta,$id,$tipo,$diferencia,'EDICION DE ARTICULO',$detalle,$usuario);
                 if ($ok) { mysqli_commit($conecta); if ($fotoNueva && $anterior['foto'] && is_file(__DIR__.'/'.$anterior['foto'])) unlink(__DIR__.'/'.$anterior['foto']); $mensaje = 'Articulo actualizado correctamente.'; }
                 else { mysqli_rollback($conecta); if ($fotoNueva && is_file(__DIR__.'/'.$fotoNueva)) unlink(__DIR__.'/'.$fotoNueva); $error = 'No se pudo actualizar el articulo.'; }
             } else {
@@ -114,8 +131,15 @@ if (!$error && $_SERVER['REQUEST_METHOD'] === 'POST') {
             $id = (int)($_POST['articulo_id'] ?? 0);
             $uso = mysqli_query($conecta, "SELECT 1 FROM inventario_salida_detalle d JOIN inventario_salidas s ON s.id=d.salida_id WHERE d.articulo_id=$id AND s.estado='En curso' AND d.cantidad>d.devuelto LIMIT 1");
             if ($id < 1 || ($uso && mysqli_num_rows($uso))) $error = 'No se puede eliminar un articulo que esta en uso.';
-            elseif (ejecutar($conecta, 'UPDATE inventario_articulos SET activo=0 WHERE id=? AND activo=1', 'i', array($id))) $mensaje = 'Articulo eliminado del inventario.';
-            else $error = 'No se pudo eliminar el articulo.';
+            else {
+                mysqli_begin_transaction($conecta);
+                $articulo = mysqli_query($conecta, "SELECT existencia FROM inventario_articulos WHERE id=$id AND activo=1 FOR UPDATE");
+                $actual = $articulo ? mysqli_fetch_assoc($articulo) : null;
+                $ok = $actual && ejecutar($conecta, 'UPDATE inventario_articulos SET activo=0 WHERE id=? AND activo=1', 'i', array($id));
+                if ($ok) $ok = registrarMovimiento($conecta,$id,'Baja',0,'BAJA DE ARTICULO','Articulo retirado del inventario; existencia al momento de la baja: '.number_format((float)$actual['existencia'],2,'.',''),$usuario);
+                if ($ok) { mysqli_commit($conecta); $mensaje = 'Articulo eliminado del inventario y baja registrada en el kardex.'; }
+                else { mysqli_rollback($conecta); $error = 'No se pudo eliminar el articulo.'; }
+            }
         } elseif ($accion === 'ajuste') {
             $id = (int)($_POST['articulo_id'] ?? 0); $nueva = numero($_POST['nueva_existencia'] ?? -1);
             mysqli_begin_transaction($conecta);
@@ -125,7 +149,7 @@ if (!$error && $_SERVER['REQUEST_METHOD'] === 'POST') {
             else {
                 $diferencia = $nueva - (float)$actual['existencia'];
                 $ok = ejecutar($conecta, 'UPDATE inventario_articulos SET existencia=? WHERE id=?', 'di', array($nueva,$id));
-                $ok = $ok && ejecutar($conecta, "INSERT INTO inventario_movimientos (articulo_id,tipo,cantidad,referencia,usuario) VALUES (?,'Ajuste',?,'AJUSTE MANUAL',?)", 'ids', array($id,$diferencia,$usuario));
+                $ok = $ok && registrarMovimiento($conecta,$id,'Ajuste',$diferencia,'AJUSTE MANUAL','Existencia: '.number_format((float)$actual['existencia'],2,'.','').' -> '.number_format($nueva,2,'.',''),$usuario);
                 if ($ok) { mysqli_commit($conecta); $mensaje = 'Existencia actualizada.'; } else { mysqli_rollback($conecta); $error = 'No se pudo guardar el ajuste.'; }
             }
         } elseif ($accion === 'salida') {
@@ -150,7 +174,7 @@ if (!$error && $_SERVER['REQUEST_METHOD'] === 'POST') {
                     $ok = $ok && ejecutar($conecta, 'INSERT INTO inventario_salida_detalle (salida_id,articulo_id,cantidad) VALUES (?,?,?)', 'iid', array($salidaId,$articuloId,$cantidad));
                     $ok = $ok && ejecutar($conecta, 'UPDATE inventario_articulos SET existencia=existencia-? WHERE id=?', 'di', array($cantidad,$articuloId));
                     $negativa = -$cantidad;
-                    $ok = $ok && ejecutar($conecta, "INSERT INTO inventario_movimientos (articulo_id,tipo,cantidad,referencia,usuario) VALUES (?,'Salida',?,?,?)", 'idss', array($articuloId,$negativa,$folio,$usuario));
+                    $ok = $ok && registrarMovimiento($conecta,$articuloId,'Salida',$negativa,$folio,'Salida a '.$destino.'; responsable: '.$responsable.'; trabajo: '.$motivo,$usuario);
                 }
                 if ($ok) { mysqli_commit($conecta); $mensaje = "Salida $folio registrada y existencias descontadas."; }
                 else { mysqli_rollback($conecta); $error = 'No se registro la salida: revise articulos repetidos, cantidades y existencias disponibles.'; }
@@ -166,7 +190,7 @@ if (!$error && $_SERVER['REQUEST_METHOD'] === 'POST') {
                 if ($devuelve > 0) {
                     $ok = $ok && ejecutar($conecta, 'UPDATE inventario_articulos SET existencia=existencia+? WHERE id=?', 'di', array($devuelve,$d['articulo_id']));
                     $ok = $ok && ejecutar($conecta, 'UPDATE inventario_salida_detalle SET devuelto=cantidad WHERE id=?', 'i', array($d['id']));
-                    $ok = $ok && ejecutar($conecta, "INSERT INTO inventario_movimientos (articulo_id,tipo,cantidad,referencia,usuario) VALUES (?,'Devolucion',?,?,?)", 'idss', array($d['articulo_id'],$devuelve,$salida['folio'],$usuario));
+                    $ok = $ok && registrarMovimiento($conecta,$d['articulo_id'],'Devolucion',$devuelve,$salida['folio'],'Devolucion al cerrar la salida de trabajo',$usuario);
                 }
             }
             $ok = $ok && ejecutar($conecta, "UPDATE inventario_salidas SET estado='Cerrada' WHERE id=?", 'i', array($salidaId));
