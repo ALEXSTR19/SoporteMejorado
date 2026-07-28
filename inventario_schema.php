@@ -60,5 +60,25 @@ function prepararInventario($conexion)
             return 'No fue posible preparar el modulo de inventario: ' . mysqli_error($conexion);
         }
     }
+
+    // Las instalaciones que ya tenian el modulo reciben los campos del control
+    // historico sin perder sus articulos ni movimientos actuales.
+    $columnas = array(
+        'modelo' => "VARCHAR(100) NOT NULL DEFAULT '' AFTER nombre",
+        'foto' => "VARCHAR(255) NOT NULL DEFAULT '' AFTER modelo",
+        'estado' => "VARCHAR(50) NOT NULL DEFAULT 'Nueva' AFTER ubicacion",
+        'observaciones' => "VARCHAR(500) NOT NULL DEFAULT '' AFTER descripcion",
+        'usuario_anterior' => "VARCHAR(150) NOT NULL DEFAULT '' AFTER observaciones",
+        'usuario_actual' => "VARCHAR(150) NOT NULL DEFAULT '' AFTER usuario_anterior"
+    );
+    foreach ($columnas as $nombre => $definicion) {
+        $nombreSeguro = mysqli_real_escape_string($conexion, $nombre);
+        $existe = mysqli_query($conexion, "SHOW COLUMNS FROM inventario_articulos LIKE '$nombreSeguro'");
+        if (!$existe || mysqli_num_rows($existe) === 0) {
+            if (!mysqli_query($conexion, "ALTER TABLE inventario_articulos ADD COLUMN `$nombre` $definicion")) {
+                return 'No fue posible actualizar el modulo de inventario: ' . mysqli_error($conexion);
+            }
+        }
+    }
     return '';
 }
