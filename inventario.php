@@ -59,15 +59,20 @@ function generarCodigoInventario($db, $nombre, $modelo) {
 }
 function guardarFotoInventario($archivo, &$error) {
     if (!isset($archivo['error']) || $archivo['error'] === UPLOAD_ERR_NO_FILE) return '';
-    if ($archivo['error'] !== UPLOAD_ERR_OK || $archivo['size'] > 5 * 1024 * 1024) {
+    if ($archivo['error'] !== UPLOAD_ERR_OK || !isset($archivo['tmp_name'], $archivo['size']) || $archivo['size'] > 5 * 1024 * 1024) {
         $error = 'La foto no pudo cargarse o supera el limite de 5 MB.'; return '';
     }
-    $mime = function_exists('mime_content_type') ? mime_content_type($archivo['tmp_name']) : '';
-    $extensiones = array('image/jpeg'=>'jpg', 'image/png'=>'png', 'image/webp'=>'webp');
-    if (!isset($extensiones[$mime])) { $error = 'La foto debe ser JPG, PNG o WEBP.'; return ''; }
+    // Validar el contenido real de la imagen. El MIME enviado por el navegador o
+    // mime_content_type() no es uniforme entre dispositivos (por ejemplo, algunos
+    // PNG se reportan como application/octet-stream o image/x-png).
+    $datosImagen = @getimagesize($archivo['tmp_name']);
+    $tipoImagen = is_array($datosImagen) && isset($datosImagen[2]) ? $datosImagen[2] : false;
+    $extensiones = array(IMAGETYPE_JPEG => 'jpg', IMAGETYPE_PNG => 'png');
+    if (defined('IMAGETYPE_WEBP')) $extensiones[IMAGETYPE_WEBP] = 'webp';
+    if (!isset($extensiones[$tipoImagen])) { $error = 'La foto debe ser JPG, PNG o WEBP.'; return ''; }
     $directorio = __DIR__ . '/uploads/inventario';
     if (!is_dir($directorio) && !mkdir($directorio, 0755, true)) { $error = 'No fue posible preparar la carpeta de fotos.'; return ''; }
-    $nombre = bin2hex(random_bytes(16)) . '.' . $extensiones[$mime];
+    $nombre = bin2hex(random_bytes(16)) . '.' . $extensiones[$tipoImagen];
     if (!move_uploaded_file($archivo['tmp_name'], $directorio . '/' . $nombre)) { $error = 'No fue posible guardar la foto.'; return ''; }
     return 'uploads/inventario/' . $nombre;
 }
