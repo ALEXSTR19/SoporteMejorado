@@ -1,0 +1,134 @@
+<?php
+require_once('seguridad_ambos.php');
+require_once('conexion.php');
+require_once('inventario_schema.php');
+
+$error = prepararInventario($conecta);
+$mensaje = '';
+if (empty($_SESSION['inventario_csrf'])) {
+    $_SESSION['inventario_csrf'] = bin2hex(random_bytes(24));
+}
+
+function e($valor) { return htmlspecialchars((string)$valor, ENT_QUOTES, 'UTF-8'); }
+function numero($valor) { return is_numeric($valor) ? round((float)$valor, 2) : 0; }
+function ejecutar($db, $sql, $tipos, $valores) {
+    $stmt = mysqli_prepare($db, $sql);
+    if (!$stmt) return false;
+    if ($tipos !== '') mysqli_stmt_bind_param($stmt, $tipos, ...$valores);
+    $ok = mysqli_stmt_execute($stmt);
+    mysqli_stmt_close($stmt);
+    return $ok;
+}
+
+if (!$error && $_SERVER['REQUEST_METHOD'] === 'POST') {
+    if (!hash_equals($_SESSION['inventario_csrf'], isset($_POST['csrf']) ? $_POST['csrf'] : '')) {
+        $error = 'La sesion del formulario vencio. Recargue la pagina e intente nuevamente.';
+    } else {
+        $accion = isset($_POST['accion']) ? $_POST['accion'] : '';
+        $usuario = isset($_SESSION['usuarioactual']) ? $_SESSION['usuarioactual'] : 'sistema';
+        if ($accion === 'articulo') {
+            $codigo = trim($_POST['codigo'] ?? ''); $nombre = trim($_POST['nombre'] ?? '');
+            $categoria = $_POST['categoria'] ?? 'Material'; $unidad = trim($_POST['unidad'] ?? 'pieza');
+            $existencia = numero($_POST['existencia'] ?? 0); $minimo = numero($_POST['minimo'] ?? 0);
+            $ubicacion = trim($_POST['ubicacion'] ?? ''); $descripcion = trim($_POST['descripcion'] ?? '');
+            $reutilizable = isset($_POST['reutilizable']) ? 1 : 0;
+            $permitidas = array('Herramienta','Material','Refaccion','Equipo','Otro');
+            if ($codigo === '' || $nombre === '' || $existencia < 0 || !in_array($categoria, $permitidas, true)) {
+                $error = 'Capture codigo, nombre y cantidades validas.';
+            } elseif (ejecutar($conecta, 'INSERT INTO inventario_articulos (codigo,nombre,categoria,unidad,existencia,minimo,ubicacion,descripcion,reutilizable,creado_por) VALUES (?,?,?,?,?,?,?,?,?,?)', 'ssssddssis', array($codigo,$nombre,$categoria,$unidad,$existencia,$minimo,$ubicacion,$descripcion,$reutilizable,$usuario))) {
+                $id = mysqli_insert_id($conecta);
+                ejecutar($conecta, "INSERT INTO inventario_movimientos (articulo_id,tipo,cantidad,referencia,usuario) VALUES (?,'Alta',?,'INICIAL',?)", 'ids', array($id,$existencia,$usuario));
+                $mensaje = 'Articulo registrado correctamente.';
+            } else { $error = 'No se pudo registrar. Verifique que el codigo no este repetido.'; }
+        } elseif ($accion === 'ajuste') {
+            $id = (int)($_POST['articulo_id'] ?? 0); $nueva = numero($_POST['nueva_existencia'] ?? -1);
+            mysqli_begin_transaction($conecta);
+            $res = mysqli_query($conecta, "SELECT existencia FROM inventario_articulos WHERE id=$id FOR UPDATE");
+            $actual = $res ? mysqli_fetch_assoc($res) : null;
+            if (!$actual || $nueva < 0) { mysqli_rollback($conecta); $error = 'El ajuste solicitado no es valido.'; }
+            else {
+                $diferencia = $nueva - (float)$actual['existencia'];
+                $ok = ejecutar($conecta, 'UPDATE inventario_articulos SET existencia=? WHERE id=?', 'di', array($nueva,$id));
+                $ok = $ok && ejecutar($conecta, "INSERT INTO inventario_movimientos (articulo_id,tipo,cantidad,referencia,usuario) VALUES (?,'Ajuste',?,'AJUSTE MANUAL',?)", 'ids', array($id,$diferencia,$usuario));
+                if ($ok) { mysqli_commit($conecta); $mensaje = 'Existencia actualizada.'; } else { mysqli_rollback($conecta); $error = 'No se pudo guardar el ajuste.'; }
+            }
+        } elseif ($accion === 'salida') {
+            $fecha = $_POST['fecha'] ?? ''; $hora = $_POST['hora'] ?? ''; $destino = trim($_POST['destino'] ?? '');
+            $motivo = trim($_POST['motivo'] ?? ''); $responsable = trim($_POST['responsable'] ?? ''); $obs = trim($_POST['observaciones'] ?? '');
+            $ids = $_POST['articulo'] ?? array(); $cantidades = $_POST['cantidad'] ?? array();
+            if (!$fecha || !$hora || !$destino || !$motivo || !$responsable || !is_array($ids) || count($ids) < 1) $error = 'Complete los datos de la salida y agregue al menos un articulo.';
+            else {
+                mysqli_begin_transaction($conecta); $ok = true; $lineas = array();
+                foreach ($ids as $i => $articuloId) {
+                    $articuloId = (int)$articuloId; $cantidad = numero($cantidades[$i] ?? 0);
+                    if ($articuloId < 1 || $cantidad <= 0 || isset($lineas[$articuloId])) { $ok = false; break; }
+                    $res = mysqli_query($conecta, "SELECT existencia FROM inventario_articulos WHERE id=$articuloId AND activo=1 FOR UPDATE");
+                    $art = $res ? mysqli_fetch_assoc($res) : null;
+                    if (!$art || (float)$art['existencia'] < $cantidad) { $ok = false; break; }
+                    $lineas[$articuloId] = $cantidad;
+                }
+                $folio = 'ST-' . date('Ymd-His') . '-' . random_int(10,99);
+                if ($ok) $ok = ejecutar($conecta, 'INSERT INTO inventario_salidas (folio,fecha,hora,destino,motivo,responsable,observaciones,creado_por) VALUES (?,?,?,?,?,?,?,?)', 'ssssssss', array($folio,$fecha,$hora,$destino,$motivo,$responsable,$obs,$usuario));
+                $salidaId = mysqli_insert_id($conecta);
+                foreach ($lineas as $articuloId => $cantidad) {
+                    $ok = $ok && ejecutar($conecta, 'INSERT INTO inventario_salida_detalle (salida_id,articulo_id,cantidad) VALUES (?,?,?)', 'iid', array($salidaId,$articuloId,$cantidad));
+                    $ok = $ok && ejecutar($conecta, 'UPDATE inventario_articulos SET existencia=existencia-? WHERE id=?', 'di', array($cantidad,$articuloId));
+                    $negativa = -$cantidad;
+                    $ok = $ok && ejecutar($conecta, "INSERT INTO inventario_movimientos (articulo_id,tipo,cantidad,referencia,usuario) VALUES (?,'Salida',?,?,?)", 'idss', array($articuloId,$negativa,$folio,$usuario));
+                }
+                if ($ok) { mysqli_commit($conecta); $mensaje = "Salida $folio registrada y existencias descontadas."; }
+                else { mysqli_rollback($conecta); $error = 'No se registro la salida: revise articulos repetidos, cantidades y existencias disponibles.'; }
+            }
+        } elseif ($accion === 'cerrar') {
+            $salidaId = (int)($_POST['salida_id'] ?? 0); mysqli_begin_transaction($conecta); $ok = true;
+            $salidaRes = mysqli_query($conecta, "SELECT folio FROM inventario_salidas WHERE id=$salidaId AND estado='En curso' FOR UPDATE");
+            $salida = $salidaRes ? mysqli_fetch_assoc($salidaRes) : null;
+            if (!$salida) $ok = false;
+            $detalles = $ok ? mysqli_query($conecta, "SELECT d.id,d.articulo_id,d.cantidad,d.devuelto FROM inventario_salida_detalle d JOIN inventario_articulos a ON a.id=d.articulo_id WHERE d.salida_id=$salidaId AND a.reutilizable=1 FOR UPDATE") : false;
+            while ($detalles && ($d = mysqli_fetch_assoc($detalles))) {
+                $devuelve = max(0, (float)$d['cantidad'] - (float)$d['devuelto']);
+                if ($devuelve > 0) {
+                    $ok = $ok && ejecutar($conecta, 'UPDATE inventario_articulos SET existencia=existencia+? WHERE id=?', 'di', array($devuelve,$d['articulo_id']));
+                    $ok = $ok && ejecutar($conecta, 'UPDATE inventario_salida_detalle SET devuelto=cantidad WHERE id=?', 'i', array($d['id']));
+                    $ok = $ok && ejecutar($conecta, "INSERT INTO inventario_movimientos (articulo_id,tipo,cantidad,referencia,usuario) VALUES (?,'Devolucion',?,?,?)", 'idss', array($d['articulo_id'],$devuelve,$salida['folio'],$usuario));
+                }
+            }
+            $ok = $ok && ejecutar($conecta, "UPDATE inventario_salidas SET estado='Cerrada' WHERE id=?", 'i', array($salidaId));
+            if ($ok) { mysqli_commit($conecta); $mensaje = 'Salida cerrada; las herramientas reutilizables regresaron a existencia.'; } else { mysqli_rollback($conecta); $error = 'No fue posible cerrar la salida.'; }
+        }
+    }
+}
+
+$articulos = $error ? false : mysqli_query($conecta, 'SELECT * FROM inventario_articulos WHERE activo=1 ORDER BY nombre');
+$catalogo = array(); if ($articulos) while ($a = mysqli_fetch_assoc($articulos)) $catalogo[] = $a;
+$salidas = $error ? false : mysqli_query($conecta, "SELECT s.*,COUNT(d.id) articulos,SUM(d.cantidad) unidades FROM inventario_salidas s LEFT JOIN inventario_salida_detalle d ON d.salida_id=s.id GROUP BY s.id ORDER BY s.id DESC LIMIT 50");
+$total = count($catalogo); $bajo = 0; $disponibles = 0;
+foreach ($catalogo as $a) { $disponibles += (float)$a['existencia']; if ((float)$a['existencia'] <= (float)$a['minimo']) $bajo++; }
+?>
+<!doctype html><html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Control e inventario | SOPORTICS</title><link rel="icon" href="images/icono.png"><link href="css/bootstrap.min.css" rel="stylesheet"><link href="css/dashboard.css" rel="stylesheet">
+<style>
+body{background:#f4f7fb}.inventory-hero{background:linear-gradient(125deg,#123c69,#176b87);color:#fff;border-radius:1rem;padding:1.6rem}.metric{border:0;border-radius:1rem;box-shadow:0 5px 20px rgba(21,49,78,.08)}.metric .number{font-size:1.8rem;font-weight:700}.panel{border:0;border-radius:1rem;box-shadow:0 5px 20px rgba(21,49,78,.08)}.stock-low{background:#fff3cd!important}.table td,.table th{vertical-align:middle}.brand-dot{width:10px;height:10px;background:#43d9a3;border-radius:50%;display:inline-block}.nav-pills .nav-link.active{background:#176b87}.item-row{border:1px solid #dee2e6;border-radius:.7rem;padding:.75rem;margin-bottom:.6rem;background:#fff}@media print{.no-print{display:none!important}body{background:#fff}.panel{box-shadow:none}}
+</style></head><body>
+<header class="navbar bg-dark px-3 py-2 sticky-top"><a class="navbar-brand text-white" href="<?php echo $esMaster?'principal.php':'principalU.php'; ?>"><span class="brand-dot me-2"></span>SOPORTICS</a><div class="text-white"><span class="me-3"><?php echo e($_SESSION['usuarioactual']); ?></span><a href="salir.php" class="btn btn-outline-light btn-sm">Salir</a></div></header>
+<main class="container-fluid px-lg-4 py-4">
+<div class="inventory-hero mb-4 d-md-flex justify-content-between align-items-center"><div><div class="text-uppercase small opacity-75">Tecnologias de la informacion</div><h1 class="h2 mb-1">Control e inventario</h1><p class="mb-0 opacity-75">Existencias, herramientas y salidas de trabajo en un solo lugar.</p></div><a class="btn btn-light mt-3 mt-md-0 no-print" href="<?php echo $esMaster?'principal.php':'principalU.php'; ?>">&larr; Menu principal</a></div>
+<?php if($mensaje): ?><div class="alert alert-success alert-dismissible fade show"><?php echo e($mensaje); ?><button class="btn-close" data-bs-dismiss="alert"></button></div><?php endif; ?>
+<?php if($error): ?><div class="alert alert-danger"><?php echo e($error); ?></div><?php endif; ?>
+<div class="row g-3 mb-4"><div class="col-md-4"><div class="card metric"><div class="card-body"><span class="text-secondary">Articulos activos</span><div class="number"><?php echo $total; ?></div></div></div></div><div class="col-md-4"><div class="card metric"><div class="card-body"><span class="text-secondary">Unidades disponibles</span><div class="number"><?php echo number_format($disponibles,2); ?></div></div></div></div><div class="col-md-4"><div class="card metric"><div class="card-body"><span class="text-secondary">En minimo o agotados</span><div class="number text-<?php echo $bajo?'danger':'success'; ?>"><?php echo $bajo; ?></div></div></div></div></div>
+<ul class="nav nav-pills gap-2 mb-3 no-print" role="tablist"><li><button class="nav-link active" data-bs-toggle="pill" data-bs-target="#existencias">Existencias</button></li><li><button class="nav-link" data-bs-toggle="pill" data-bs-target="#alta">Nuevo articulo</button></li><li><button class="nav-link" data-bs-toggle="pill" data-bs-target="#nueva-salida">Registrar salida</button></li><li><button class="nav-link" data-bs-toggle="pill" data-bs-target="#historial">Salidas de trabajo</button></li></ul>
+<div class="tab-content">
+<section class="tab-pane fade show active" id="existencias"><div class="card panel"><div class="card-header bg-white py-3 d-flex justify-content-between"><h2 class="h5 mb-0">Inventario actual</h2><input id="buscar" class="form-control form-control-sm no-print" style="max-width:280px" placeholder="Buscar codigo, articulo o ubicacion"></div><div class="table-responsive"><table class="table table-hover mb-0" id="tablaInventario"><thead><tr><th>Codigo / articulo</th><th>Categoria</th><th>Ubicacion</th><th>Disponible</th><th>Minimo</th><th class="no-print">Ajustar</th></tr></thead><tbody><?php foreach($catalogo as $a): ?><tr class="<?php echo (float)$a['existencia'] <= (float)$a['minimo']?'stock-low':''; ?>"><td><strong><?php echo e($a['codigo']); ?></strong><br><span><?php echo e($a['nombre']); ?></span><?php if($a['reutilizable']): ?><span class="badge bg-info text-dark ms-1">Retornable</span><?php endif; ?></td><td><?php echo e($a['categoria']); ?></td><td><?php echo e($a['ubicacion'] ?: 'Sin asignar'); ?></td><td><strong><?php echo number_format($a['existencia'],2); ?></strong> <?php echo e($a['unidad']); ?></td><td><?php echo number_format($a['minimo'],2); ?></td><td class="no-print"><form method="post" class="d-flex gap-1"><input type="hidden" name="csrf" value="<?php echo e($_SESSION['inventario_csrf']); ?>"><input type="hidden" name="accion" value="ajuste"><input type="hidden" name="articulo_id" value="<?php echo (int)$a['id']; ?>"><input class="form-control form-control-sm" name="nueva_existencia" type="number" min="0" step=".01" value="<?php echo e($a['existencia']); ?>" style="width:90px" required><button class="btn btn-outline-primary btn-sm">Guardar</button></form></td></tr><?php endforeach; ?><?php if(!$catalogo): ?><tr><td colspan="6" class="text-center py-5 text-secondary">Aun no hay articulos. Use “Nuevo articulo” para comenzar.</td></tr><?php endif; ?></tbody></table></div></div></section>
+<section class="tab-pane fade" id="alta"><div class="card panel"><div class="card-body p-lg-4"><h2 class="h4 mb-3">Registrar herramienta o material</h2><form method="post" class="row g-3"><input type="hidden" name="csrf" value="<?php echo e($_SESSION['inventario_csrf']); ?>"><input type="hidden" name="accion" value="articulo"><div class="col-md-3"><label class="form-label">Codigo *</label><input name="codigo" class="form-control" maxlength="40" required></div><div class="col-md-6"><label class="form-label">Nombre *</label><input name="nombre" class="form-control" maxlength="150" required></div><div class="col-md-3"><label class="form-label">Categoria</label><select name="categoria" class="form-select"><option>Herramienta</option><option selected>Material</option><option>Refaccion</option><option>Equipo</option><option>Otro</option></select></div><div class="col-md-3"><label class="form-label">Existencia inicial</label><input name="existencia" type="number" min="0" step=".01" value="0" class="form-control" required></div><div class="col-md-3"><label class="form-label">Stock minimo</label><input name="minimo" type="number" min="0" step=".01" value="0" class="form-control" required></div><div class="col-md-3"><label class="form-label">Unidad</label><input name="unidad" value="pieza" class="form-control" maxlength="30" required></div><div class="col-md-3"><label class="form-label">Ubicacion</label><input name="ubicacion" class="form-control" maxlength="120" placeholder="Almacen, estante..."></div><div class="col-12"><label class="form-label">Descripcion</label><textarea name="descripcion" class="form-control" maxlength="255" rows="2"></textarea></div><div class="col-12"><div class="form-check"><input class="form-check-input" type="checkbox" name="reutilizable" id="retornable"><label class="form-check-label" for="retornable">Es herramienta/equipo retornable (regresa al cerrar la salida)</label></div></div><div class="col-12"><button class="btn btn-primary px-4">Guardar articulo</button></div></form></div></div></section>
+<section class="tab-pane fade" id="nueva-salida"><div class="card panel"><div class="card-body p-lg-4"><h2 class="h4">Nueva salida de trabajo</h2><p class="text-secondary">Las cantidades se descuentan al registrar. Los articulos retornables vuelven al inventario al cerrar la salida.</p><form method="post" id="formSalida" class="row g-3"><input type="hidden" name="csrf" value="<?php echo e($_SESSION['inventario_csrf']); ?>"><input type="hidden" name="accion" value="salida"><div class="col-md-3"><label class="form-label">Fecha *</label><input type="date" name="fecha" value="<?php echo date('Y-m-d'); ?>" class="form-control" required></div><div class="col-md-3"><label class="form-label">Hora *</label><input type="time" name="hora" value="<?php echo date('H:i'); ?>" class="form-control" required></div><div class="col-md-6"><label class="form-label">Responsable *</label><input name="responsable" class="form-control" maxlength="150" required></div><div class="col-md-6"><label class="form-label">Destino / area *</label><input name="destino" class="form-control" maxlength="180" required></div><div class="col-md-6"><label class="form-label">Trabajo a realizar *</label><input name="motivo" class="form-control" maxlength="255" required></div><div class="col-12"><label class="form-label fw-bold">Materiales y herramientas</label><div id="lineas"></div><button type="button" id="agregarLinea" class="btn btn-outline-primary btn-sm">+ Agregar articulo</button></div><div class="col-12"><label class="form-label">Observaciones</label><textarea name="observaciones" class="form-control" rows="2"></textarea></div><div class="col-12"><button class="btn btn-primary px-4" <?php echo !$catalogo?'disabled':''; ?>>Registrar salida</button></div></form></div></div></section>
+<section class="tab-pane fade" id="historial"><div class="card panel"><div class="card-header bg-white py-3"><h2 class="h5 mb-0">Ultimas salidas</h2></div><div class="table-responsive"><table class="table table-hover mb-0"><thead><tr><th>Folio / fecha</th><th>Destino y trabajo</th><th>Responsable</th><th>Articulos</th><th>Estado</th><th class="no-print">Accion</th></tr></thead><tbody><?php if($salidas) while($s=mysqli_fetch_assoc($salidas)): ?><tr><td><strong><?php echo e($s['folio']); ?></strong><br><?php echo e($s['fecha'].' '.substr($s['hora'],0,5)); ?></td><td><?php echo e($s['destino']); ?><br><small class="text-secondary"><?php echo e($s['motivo']); ?></small></td><td><?php echo e($s['responsable']); ?></td><td><?php echo (int)$s['articulos']; ?> tipos / <?php echo number_format((float)$s['unidades'],2); ?> uds.</td><td><span class="badge bg-<?php echo $s['estado']==='En curso'?'warning text-dark':'success'; ?>"><?php echo e($s['estado']); ?></span></td><td class="no-print"><?php if($s['estado']==='En curso'): ?><form method="post" onsubmit="return confirm('¿Cerrar salida y devolver las herramientas retornables?')"><input type="hidden" name="csrf" value="<?php echo e($_SESSION['inventario_csrf']); ?>"><input type="hidden" name="accion" value="cerrar"><input type="hidden" name="salida_id" value="<?php echo (int)$s['id']; ?>"><button class="btn btn-outline-success btn-sm">Cerrar y devolver</button></form><?php endif; ?></td></tr><?php endwhile; ?></tbody></table></div></div></section>
+</div></main>
+<template id="plantillaLinea"><div class="item-row row g-2 align-items-end"><div class="col-md-8"><label class="form-label small">Articulo disponible</label><select name="articulo[]" class="form-select articulo" required><option value="">Seleccione...</option><?php foreach($catalogo as $a): if((float)$a['existencia']<=0) continue; ?><option value="<?php echo (int)$a['id']; ?>" data-stock="<?php echo e($a['existencia']); ?>" data-unidad="<?php echo e($a['unidad']); ?>"><?php echo e($a['codigo'].' · '.$a['nombre'].' ('.$a['existencia'].' '.$a['unidad'].')'); ?></option><?php endforeach; ?></select></div><div class="col-md-3"><label class="form-label small">Cantidad <span class="stockAyuda"></span></label><input name="cantidad[]" type="number" min=".01" step=".01" class="form-control cantidad" required></div><div class="col-md-1"><button type="button" class="btn btn-outline-danger quitar" aria-label="Quitar">&times;</button></div></div></template>
+<script src="js/bootstrap.bundle.min.js"></script><script>
+const lineas=document.getElementById('lineas'),tpl=document.getElementById('plantillaLinea');
+function agregar(){lineas.appendChild(tpl.content.cloneNode(true));}
+document.getElementById('agregarLinea').addEventListener('click',agregar); if(tpl.content.querySelectorAll('option').length>1) agregar();
+lineas.addEventListener('click',e=>{if(e.target.classList.contains('quitar')&&lineas.children.length>1)e.target.closest('.item-row').remove()});
+lineas.addEventListener('change',e=>{if(e.target.classList.contains('articulo')){const o=e.target.selectedOptions[0],fila=e.target.closest('.item-row');fila.querySelector('.cantidad').max=o.dataset.stock||'';fila.querySelector('.stockAyuda').textContent=o.dataset.stock?'(max. '+o.dataset.stock+' '+o.dataset.unidad+')':'';}});
+document.getElementById('buscar').addEventListener('input',e=>{const q=e.target.value.toLowerCase();document.querySelectorAll('#tablaInventario tbody tr').forEach(r=>r.hidden=!r.textContent.toLowerCase().includes(q));});
+</script></body></html>
