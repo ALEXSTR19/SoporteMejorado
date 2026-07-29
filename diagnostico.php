@@ -2,6 +2,7 @@
 include_once("fpdf.php");
 require_once("conexion.php");
 require_once("MultiCell.php");
+require_once("report_branding.php");
 
 $GLOBALS['folio']=$_GET['ref'];
 
@@ -19,20 +20,10 @@ while ($da=mysqli_fetch_array($res))
 class PDF extends PDF_MC_TABLE
 {
 function Footer(){
-        $this->SetFont('Arial','',11);
-		$this->SetXY(78,260);
-		$this->Cell(60,5,utf8_decode('Av. Juárez 20 Col. Centro Tuxpan, Ver. Tel.7838350118'),0,0,'C');
+		municipalReportFooter($this);
 	    }
 function Header(){
-	$this->Image('log2.png',5,6,20,0);
-	$this->Image('log1.png',185,6,25,0);
-
-	$this->SetFont('Arial','B',18);
-	$this->Cell(0,6,utf8_decode('Coordinación de Tecnologías de la Información'),0,1,'C');
-	$this->Ln(4);
-	$this->SetFont('Arial','B',14);
-	$this->Cell(0,6,utf8_decode('Reporte de Evidencias del Equipo con el Folio: '.$GLOBALS['folio']),0,0,'C');
-	$this->Ln(10);
+	municipalReportHeader($this, 'Reporte de evidencias · Folio '.$GLOBALS['folio']);
 }
 function NbLines($w,$txt)
 {

@@ -2,6 +2,7 @@
 include_once("fpdf.php");
 require_once("conexion.php");
 require_once("MultiCell.php");
+require_once("report_branding.php");
 
 $GLOBALS['fi'] = $_POST['finicio'];
 $GLOBALS['ff'] = $_POST['ffin'];
@@ -15,25 +16,16 @@ $query1="select folio from soportes where fecha between '$fi' and '$ff'";
 class PDF extends PDF_MC_TABLE
 {
 function Footer(){
-        $this->SetFont('Arial','',12);
-		$this->SetY(-30);
-		$this->Cell(60,5,utf8_decode('Av. Juárez 20 Col. Centro Tuxpan, Ver. Tel.7838350118'),0,0,'C');
+		municipalReportFooter($this);
 	    }
 function Header(){
-	$this->Image('log2.png',5,6,30,0);
-	$this->Image('log1.png',245,6,30,0);
-
-	$this->SetFont('Arial','B',18);
-	$this->Cell(0,6,utf8_decode('Coordinación de Tecnologias de la Información'),0,1,'C');
-	$this->Ln(6);
-	$this->SetFont('Arial','B',14);
-	$this->Cell(0,6,utf8_decode('Reporte de Soportes del '.$GLOBALS['di'].' al '.$GLOBALS['df'].' de '.$GLOBALS['m'].' del '.$GLOBALS['an'].' de Todas las Áreas'),0,0,'C');
-	$this->Ln(6);
+	municipalReportHeader($this, 'Reporte de Soportes del '.$GLOBALS['di'].' al '.$GLOBALS['df'].' de '.$GLOBALS['m'].' de '.$GLOBALS['an'].' · Todas las Áreas');
 }	
 }
 
 $pdf=new PDF();
 $pdf->AddPage('landscape','letter');
+$pdf->AliasNbPages();
 
 $pdf->SetFont('Arial','',10);
 
@@ -70,8 +62,7 @@ if ($ancho_fallas_nuevo < $ANCHO_FALLAS_MIN) {
 }
 
 $pdf->Ln(6);
-$pdf->SetFillColor(149,47,87);//Color de fondo
-$pdf->SetTextColor(255);//Color del texto
+municipalTableHeader($pdf);
 $pdf->SetFont('Arial','B',10);
 $pdf->Cell($ancho_folio_final,6,'Folio',1,0,'C',1);$pdf->Cell(21,6,'Fecha Reg.',1,0,'C',1);$pdf->Cell(24,6,utf8_decode('Equipo'),1,0,'C',1);
 $pdf->Cell(29,6,utf8_decode('N. Serie'),1,0,'C',1);$pdf->Cell(29,6,utf8_decode('N. Inventario'),1,0,'C',1);
