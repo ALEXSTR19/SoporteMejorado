@@ -2,6 +2,7 @@
 include_once("fpdf.php");
 require_once("conexion.php");
 require_once("MultiCell.php");
+require_once("report_branding.php");
 
 $GLOBALS['inventario'] = $_POST['in'];
 
@@ -18,21 +19,11 @@ class PDF extends PDF_MC_Table
 {
 function Footer()
 {
-	$this->SetFont('Arial','',11);
-	$this->SetXY(78,280);
-	$this->Cell(60,5,utf8_decode('Av. Juárez 20 Col. Centro Tuxpan, Ver. Tel.7838350118'),0,0,'C');
+	municipalReportFooter($this);
 }
 function Header()
 {
-	$this->Image('log2.png',5,6,25,0);
-	$this->Image('log1.png',180,6,25,0);
-	
-	$this->SetFont('Arial','B',18);
-	$this->Cell(0,5,utf8_decode('Coordinación de Tecnologías de la Información'),0,0,'C');
-	$this->Ln(8);
-	$this->SetFont('Arial','B',14);
-	$this->Cell(0,5,'Kardex del equipo: '.$GLOBALS['equipo'],0,1,'C');
-	$this->Cell(0,5,utf8_decode('Numero de inventario del equipo: '.$GLOBALS['inventario']),0,1,'C');
+	municipalReportHeader($this, 'Kardex de '.$GLOBALS['equipo'].' · Inventario '.$GLOBALS['inventario']);
 }	
 }
 
@@ -40,8 +31,7 @@ $pdf = new PDF();
 $pdf->AddPage();
 $pdf->AliasNbPages();
 $pdf->Ln(4);
-$pdf->SetFillColor(149,47,87);//Color de fondo
-$pdf->SetTextColor(255);//Color del texto
+municipalTableHeader($pdf);
 $pdf->SetFont('Arial','B', 12);
 $pdf->Cell(24,5,'Fecha',1,0,'C',1);$pdf->Cell(83,5,'Falla',1,0,'C',1);$pdf->Cell(83,5,'Diagnostico',1,1,'C',1);
 $pdf->SetFont('Arial','', 11);
